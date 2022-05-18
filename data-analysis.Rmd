@@ -1,0 +1,1028 @@
+---
+title: "Teachers Without Borders: Professional Learning Spanning Social Media, Place, and Time"
+subtitle: "Data Analysis"
+author: "K. Bret Staudt Willet"
+date: "May 20, 2022"
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(collapse = TRUE)
+usethis::use_git_ignore(c("*.rds", "*.log", "*.json"))
+#usethis::edit_r_environ()
+
+library(tidyverse)
+library(anytime)
+library(lubridate)
+library(beepr)
+
+#devtools::install_github("cjbarrie/academictwitteR")
+library(academictwitteR)
+
+#install.packages("tidytags", repos = "https://ropensci.r-universe.dev")
+library(tidytags)
+
+library(rtweet)
+library(viridis)
+library(quanteda)
+library(topicmodels)
+library(tidytext)
+library(seriation)
+library(sf)
+library(ggmap)
+```
+
+## Abstract
+
+As new technologies shape and are shaped by human practices, educators and researchers must consider how today’s technology-mediated environments expand our conceptualization of learning contexts and the continuities and tensions between learning and participation in various settings. The Covid-19 pandemic disrupted educational systems worldwide. Teachers and students rapidly transitioned to emergency remote teaching. This shift coincided with existing trends towards self-directed learning and social media use. Such shifts in the educational landscape require our reconceptualization of the boundaries of learning in a digital age. Toward this reconceptualization, this article explores British and American teachers’ experiences of formal and informal professional learning. We collected 353,196 #UKEdchat tweets and 2,491,244 #Edchat tweets spanning a 28-month time period, January 1, 2019–April 30, 2021. From tweets containing questions tweets, we identified high frequency question tweeters; we manually reviewed these tweeters’ profiles and tweets to identify a smaller sample of secondary school teachers in the U.K. and U.S. to interview. We interviewed XX teachers and analyzed qualitative data from these interviews. Methods, findings, implications for “boundaries of learning in the context of new technology.”
+
+## Scrape Hashtag Data Using Twitter Academic API
+
+```{r, eval=FALSE}
+tweets_raw <- 
+  academictwitteR::get_all_tweets(
+    query = "#edchat",  # this query is not case sensitive
+    n = 1500000,
+    page_n = 500,
+    start_tweet = "2006-03-21T00:00:00Z", 
+    end_tweets = "2021-05-01T00:00:00Z",
+    bearer_token = Sys.getenv("TWITTER_BEARER_TOKEN"), 
+    data_path = "data-edchat/",
+    bind_tweets = FALSE
+  )
+beepr::beep(8)
+```
+
+```{r, eval=FALSE}
+tweets_loaded <- 
+  academictwitteR::bind_tweets(
+    data_path = "data-edchat/", 
+    output_format = "tidy"
+  )
+beepr::beep(8)
+```
+
+```{r, eval=FALSE}
+tweet_id_vector <- 
+  tweets_loaded %>% 
+  select(tweet_id)
+write_csv(tweet_id_vector, 
+          file = "ids/ids-edchat.csv")
+```
+
+```{r, eval=FALSE}
+ids_reloaded <- 
+  read_csv("ids/ids-edchat.csv", col_types = 'c')
+```
+
+```{r, eval=FALSE, message=FALSE}
+tweets_full <- 
+  tidytags::lookup_many_tweets(
+    ids_reloaded$tweet_id,
+    alarm = TRUE)
+saveRDS(tweets_full, "Rds/tweets-edchat.Rds")
+beepr::beep(8)
+```
+
+## Load Data
+
+```{r}
+tweets_uk0 <- readRDS("tweets-ukedchat-2014-2021.Rds")
+tweets_us1 <- readRDS("tweets-edchat-2018-2019.Rds")
+tweets_us2 <- readRDS("tweets-edchat-2019-2021.Rds")
+beepr::beep(8)
+```
+
+```{r}
+tweets_uk <- 
+  tweets_uk0 %>%
+  distinct(status_id, .keep_all = TRUE) %>%
+  mutate(created_at = created_at %>% 
+           as.numeric() %>% 
+           anytime(asUTC = TRUE) %>% 
+           as_datetime %>%
+           ymd_hms() %>%
+           with_tz(tzone = "US/Eastern"),
+         has_question = ifelse(grepl("\\? ", text), TRUE, FALSE),
+         date = floor_date(created_at, 'day')
+  ) %>%
+  filter(date >= "2019-01-01" & date <= "2021-04-30") %>%
+  mutate(covid_period = ifelse(date <= "2020-02-29", "before", "during"), 
+         chat = "UK"
+  )
+rm(tweets_uk0)
+```
+
+```{r}
+tweets_uk %>% 
+  count(covid_period)
+```
+
+```{r}
+uk_orig <-
+  tweets_uk %>% 
+  filter(!is_retweet)
+
+count(uk_orig, covid_period)
+```
+
+```{r}
+uk_questions <-
+  tweets_uk %>% 
+  filter(!is_retweet & has_question)
+
+count(uk_questions, covid_period)
+```
+
+```{r}
+tweets_us <- 
+  tweets_us1 %>% 
+  bind_rows(tweets_us2) %>% 
+  distinct(status_id, .keep_all = TRUE) %>%
+  mutate(created_at = created_at %>% 
+           as.numeric() %>% 
+           anytime(asUTC = TRUE) %>% 
+           as_datetime %>%
+           ymd_hms() %>%
+           with_tz(tzone = "US/Eastern"),
+         has_question = ifelse(grepl("\\? ", text), TRUE, FALSE),
+         date = floor_date(created_at, 'day')
+  ) %>%
+  filter(date >= "2019-01-01" & date <= "2021-04-30") %>%
+  mutate(covid_period = ifelse(date <= "2020-02-29", "before", "during"), 
+         chat = "US"
+  )
+rm(tweets_us1); rm(tweets_us2)
+```
+
+```{r}
+tweets_us %>% 
+  count(covid_period)
+```
+
+```{r}
+us_orig <-
+  tweets_us %>% 
+  filter(!is_retweet)
+
+count(us_orig, covid_period)
+```
+
+```{r}
+us_questions <-
+  tweets_us %>% 
+  filter(!is_retweet & has_question)
+
+count(us_questions, covid_period)
+```
+
+```{r}
+tweets_us %>% 
+  filter(!is_retweet & has_question) %>%
+  count(covid_period)
+```
+
+## Plot Tweets Over Time
+
+```{r, include=FALSE}
+dates_uk_orig <- 
+  count(uk_orig, date) %>% 
+  mutate(Hashtag = "#UKEdchat", Type = "Original Tweets")
+dates_uk_question <- 
+  count(uk_questions, date) %>% 
+  mutate(Hashtag = "#UKEdchat", Type = "Question Tweets")
+dates_us_orig <- 
+  count(us_orig, date) %>% 
+  mutate(Hashtag = "#Edchat", Type = "Original Tweets")
+dates_us_question <- 
+  count(us_questions, date) %>% 
+  mutate(Hashtag = "#Edchat", Type = "Question Tweets")
+
+dates_orig <- 
+  dates_uk_orig %>%
+  bind_rows(dates_us_orig)
+
+dates_question <-
+  dates_uk_question %>%
+  bind_rows(dates_us_question)
+
+dates_all <- 
+  dates_uk_orig %>%
+  bind_rows(dates_uk_question) %>%
+  bind_rows(dates_us_orig) %>%
+  bind_rows(dates_us_question)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(dates_all, aes(x = date, y = n)) +
+  geom_point(size = 2, alpha = 0.4,
+             aes(color = Type)) + 
+  geom_vline(aes(xintercept = as.POSIXct("2020-03-01")), color = 'green') + 
+  scale_color_manual(values = c("#63ACBE", "#EE442F")) +
+  facet_grid(row = vars(Hashtag),
+             scales = 'free') +
+  xlab(NULL) +
+  ylab("Number of Tweets") +
+  theme_bw() +
+  theme(panel.grid.major = element_line(color = "gray30"),
+        panel.grid.minor = element_line(color = "gray90"),
+        axis.title=element_text(size = 24, family = 'serif'),
+        axis.text=element_text(size = 14, family = 'serif'),
+        strip.text.x = element_text(size = 24, family = 'serif'),
+        strip.text.y = element_text(size = 24, family = 'serif'),
+        legend.position = 'bottom',
+        legend.box = 'vertical',
+        legend.box.background = element_rect(),
+        legend.title=element_text(size = 24, family = 'serif'), 
+        legend.text=element_text(size = 18, family = 'serif')
+  ) +
+  labs(color = 'Tweet Type')
+```
+
+```{r, include=FALSE}
+ggsave(file="output/tweets-over-time.png", width=6.5, height=9)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(dates_orig, aes(x = date, y = n, color = Hashtag)) +
+  geom_point(size = 2, alpha = 0.5) + 
+  geom_vline(aes(xintercept = as.POSIXct("2020-03-01")), 
+             color = 'green',
+             size = 1) + 
+  scale_color_manual(values = c("#63ACBE", "#EE442F")) +
+  geom_smooth(method='lm', se=FALSE, size=1) +
+  xlab(NULL) +
+  ylab("Number of Original Tweets") +
+  theme_bw() +
+  theme(panel.grid.major = element_line(color = "gray30"),
+        panel.grid.minor = element_blank(),
+        axis.title=element_text(size = 24, family = 'serif'),
+        axis.text=element_text(size = 14, family = 'serif'),
+        strip.text.x = element_text(size = 24, family = 'serif'),
+        strip.text.y = element_text(size = 24, family = 'serif'),
+        legend.position = 'bottom',
+        legend.box = 'vertical',
+        legend.box.background = element_rect(),
+        legend.title=element_text(size = 24, family = 'serif'), 
+        legend.text=element_text(size = 18, family = 'serif')
+  )
+```
+
+```{r, include=FALSE}
+ggsave(file="output/tweets-over-time-orig.png", width=8, height=8)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(dates_question, aes(x = date, y = n, color = Hashtag)) +
+  geom_point(size = 2, alpha = 0.5) + 
+  geom_vline(aes(xintercept = as.POSIXct("2020-03-01")), 
+             color = 'green',
+             size = 1) + 
+  scale_color_manual(values = c("#63ACBE", "#EE442F")) +
+  geom_smooth(method='lm', se=FALSE, size=1) +
+  xlab(NULL) +
+  ylab("Number of Question Tweets") +
+  theme_bw() +
+  theme(panel.grid.major = element_line(color = "gray30"),
+        panel.grid.minor = element_blank(),
+        axis.title=element_text(size = 24, family = 'serif'),
+        axis.text=element_text(size = 14, family = 'serif'),
+        strip.text.x = element_text(size = 24, family = 'serif'),
+        strip.text.y = element_text(size = 24, family = 'serif'),
+        legend.position = 'bottom',
+        legend.box = 'vertical',
+        legend.box.background = element_rect(),
+        legend.title=element_text(size = 24, family = 'serif'), 
+        legend.text=element_text(size = 18, family = 'serif')
+  )
+```
+
+```{r, include=FALSE}
+ggsave(file="output/tweets-over-time-question.png", width=8, height=8)
+```
+
+### Find Slopes of Trend Lines for Tweets Over Time
+
+```{r}
+options(scipen = 999)
+
+fit_orig_uk <- 
+  dates_orig %>% 
+  filter(Hashtag=='#UKEdchat') %>% 
+  lm(n ~ date, data = .)
+slope_orig_uk <-
+  fit_orig_uk$coefficients[[2]] %>% 
+  round(8)
+p_orig_uk <-
+  summary(fit_orig_uk)$coefficients[2,4] %>% 
+  round(10)
+slope_orig_uk; p_orig_uk
+```
+
+```{r}
+fit_orig_us <- 
+  dates_orig %>% 
+  filter(Hashtag=='#Edchat') %>% 
+  lm(n ~ date, data = .)
+slope_orig_us <-
+  fit_orig_us$coefficients[[2]] %>% 
+  round(8)
+p_orig_us <-
+  summary(fit_orig_us)$coefficients[2,4] %>% 
+  round(10)
+slope_orig_us; p_orig_us
+```
+
+```{r}
+fit_question_uk <- 
+  dates_question %>% 
+  filter(Hashtag=='#UKEdchat') %>% 
+  lm(n ~ date, data = .)
+slope_question_uk <-
+  fit_question_uk$coefficients[[2]] %>% 
+  round(8)
+p_question_uk <-
+  summary(fit_question_uk)$coefficients[2,4] %>% 
+  round(10)
+slope_question_uk; p_question_uk
+```
+
+```{r}
+fit_question_us <- 
+  dates_question %>% 
+  filter(Hashtag=='#Edchat') %>% 
+  lm(n ~ date, data = .)
+slope_question_us <-
+  fit_question_us$coefficients[[2]] %>% 
+  round(8)
+p_question_us <-
+  summary(fit_question_us)$coefficients[2,4] %>% 
+  round(10)
+slope_question_us; p_question_us
+```
+
+## Analyze Co-Occurring Hashtags: \#UKEdchat
+
+```{r, include=FALSE}
+n_orig_uk_before <-
+  uk_orig %>%
+  filter(covid_period == 'before') %>%
+  nrow()
+hashtag_table_uk_before <-
+  uk_orig %>%
+  filter(covid_period == 'before') %>%
+  unnest_longer(hashtags) %>%
+  mutate(hashtags = tolower(hashtags)) %>%
+  pull(hashtags) %>% 
+  table() %>% 
+  as_tibble() %>%
+  rename(hashtag = ".",
+         n_before = n) %>%
+  mutate(p_before = round(100 * n_before / n_orig_uk_before, 2),
+         odds_before = (n_before / n_orig_uk_before) / 
+           ((n_orig_uk_before - n_before) / n_orig_uk_before)
+  ) %>%
+  filter(hashtag != 'ukedchat') %>%
+  arrange(-n_before)
+n_orig_uk_during <-
+  uk_orig %>%
+  filter(covid_period == 'during') %>%
+  nrow()
+hashtag_table_uk_during <-
+  uk_orig %>%
+  filter(covid_period == 'during') %>%
+  unnest_longer(hashtags) %>%
+  mutate(hashtags = tolower(hashtags)) %>%
+  pull(hashtags) %>% 
+  table() %>% 
+  as_tibble() %>%
+  rename(hashtag = ".",
+         n_during = n) %>%
+  mutate(p_during = round(100 * n_during / n_orig_uk_during, 2),
+         odds_during = (n_during / n_orig_uk_during) / 
+           ((n_orig_uk_during - n_during) / n_orig_uk_during)
+  ) %>%
+  filter(hashtag != 'ukedchat') %>%
+  arrange(-n_during)
+
+hashtag_comparison_table_uk_before <-
+  hashtag_table_uk_before %>%
+  head(100) %>%
+  left_join(hashtag_table_uk_during, by = 'hashtag') %>%
+  mutate(across(n_before:odds_during, coalesce, 0))
+hashtag_comparison_table_uk_during<-
+  hashtag_table_uk_during%>%
+  head(100) %>%
+  left_join(hashtag_table_uk_before, by = 'hashtag') %>%
+  mutate(across(n_during:odds_before, coalesce, 0))
+
+hashtag_comparison_table_uk <-
+  hashtag_comparison_table_uk_before %>%
+  full_join(hashtag_comparison_table_uk_during, 
+            by = c('hashtag', 'n_before', 'p_before', 'odds_before', 
+                   'n_during', 'p_during', 'odds_during') 
+  ) %>%
+  mutate(hashtag = paste0("#", hashtag),
+         log_odds_ratio = log(odds_during / odds_before)) %>%
+  arrange(odds_during)
+
+#write_csv(hashtag_comparison_table_uk, "data/hashtag_comparison_table_uk.csv")
+
+hashtags_comparison_plot_uk <- 
+  hashtag_comparison_table_uk %>%
+  mutate(log_odds_ratio = abs(log_odds_ratio)) %>%
+  arrange(-log_odds_ratio) %>%
+  filter(#log_odds_ratio >= 0.50,
+    p_before >= 0.9 | p_during >= 0.9)
+```
+
+```{r, echo=FALSE, warning=FALSE, fig.width=16, fig.height=9}
+ggplot(data = hashtags_comparison_plot_uk, 
+       mapping = aes(x = p_before, y = p_during)) +
+  geom_point(alpha = 0.6, 
+             size = 15,
+             show.legend = TRUE,
+             aes(color = log_odds_ratio)) +
+  scale_color_viridis(rescaler = function(x, to = c(0, 1), from = NULL) {
+    ifelse(x < 2, 
+           scales::rescale(x,
+                           to = to,
+                           from = c(min(x, na.rm = TRUE), 2)),
+           1)
+  }
+  ) +
+  ggrepel::geom_label_repel(data = filter(hashtags_comparison_plot_uk, 
+                                          p_during >= 0.9 | p_before >= 0.9),
+                            aes(label = hashtag),
+                            show.legend = FALSE,
+                            size = 6,
+                            family = 'serif',
+                            check_overlap = TRUE,
+                            nudge_x = 0.15,
+                            nudge_y = 0.15
+  ) +
+  #geom_text(aes(label = hashtag), check_overlap = TRUE, nudge_y = 0, nudge_x = 0.0075, size = 7, family = 'serif') +
+  geom_abline(color = "red") +
+  theme_bw() + 
+  xlab("Percentage of tweets containing hashtag before COVID-19") +
+  ylab("Percentage of tweets containing hashtag during COVID-19") +
+  xlim(0, 5) +
+  ylim(0, 5) +
+  geom_hline(yintercept = 0, color = "black") + 
+  geom_vline(xintercept = 0, color = "black") +
+  theme(panel.border = element_rect(color = "gray80"),
+        panel.grid.major = element_line(color = "gray30"),
+        panel.grid.minor = element_line(color = "gray80"),
+        axis.title=element_text(size=24, family='serif'),
+        axis.text=element_text(size=18, family='serif')
+  ) +
+  labs(color = 'log odds ratio')
+```
+
+```{r, include=FALSE, eval=FALSE}
+ggsave("output/hashtag-comparison-scatter-uk.png", width = 16, height = 9)
+```
+
+## Analyze Co-Occurring Hashtags: \#Edchat
+
+```{r, include=FALSE}
+n_orig_us_before <-
+  us_orig %>%
+  filter(covid_period == 'before') %>%
+  nrow()
+hashtag_table_us_before <-
+  us_orig %>%
+  filter(covid_period == 'before') %>%
+  unnest_longer(hashtags) %>%
+  mutate(hashtags = tolower(hashtags)) %>%
+  pull(hashtags) %>% 
+  table() %>% 
+  as_tibble() %>%
+  rename(hashtag = ".",
+         n_before = n) %>%
+  mutate(p_before = round(100 * n_before / n_orig_us_before, 2),
+         odds_before = (n_before / n_orig_us_before) / 
+           ((n_orig_us_before - n_before) / n_orig_us_before)
+  ) %>%
+  filter(hashtag != 'edchat') %>%
+  arrange(-n_before)
+n_orig_us_during <-
+  us_orig %>%
+  filter(covid_period == 'during') %>%
+  nrow()
+hashtag_table_us_during <-
+  us_orig %>%
+  filter(covid_period == 'during') %>%
+  unnest_longer(hashtags) %>%
+  mutate(hashtags = tolower(hashtags)) %>%
+  pull(hashtags) %>% 
+  table() %>% 
+  as_tibble() %>%
+  rename(hashtag = ".",
+         n_during = n) %>%
+  mutate(p_during = round(100 * n_during / n_orig_us_during, 2),
+         odds_during = (n_during / n_orig_us_during) / 
+           ((n_orig_us_during - n_during) / n_orig_us_during)
+  ) %>%
+  filter(hashtag != 'edchat') %>%
+  arrange(-n_during)
+
+hashtag_comparison_table_us_before <-
+  hashtag_table_us_before %>%
+  head(100) %>%
+  left_join(hashtag_table_us_during, by = 'hashtag') %>%
+  mutate(across(n_before:odds_during, coalesce, 0))
+hashtag_comparison_table_us_during<-
+  hashtag_table_us_during%>%
+  head(100) %>%
+  left_join(hashtag_table_us_before, by = 'hashtag') %>%
+  mutate(across(n_during:odds_before, coalesce, 0))
+
+hashtag_comparison_table_us <-
+  hashtag_comparison_table_us_before %>%
+  full_join(hashtag_comparison_table_us_during, 
+            by = c('hashtag', 'n_before', 'p_before', 'odds_before', 
+                   'n_during', 'p_during', 'odds_during') 
+  ) %>%
+  mutate(hashtag = paste0("#", hashtag),
+         log_odds_ratio = log(odds_during / odds_before)) %>%
+  arrange(odds_during)
+
+#write_csv(hashtag_comparison_table_us, "data/hashtag_comparison_table_us.csv")
+
+hashtags_comparison_plot_us <- 
+  hashtag_comparison_table_us %>%
+  mutate(log_odds_ratio = abs(log_odds_ratio)) %>%
+  arrange(-log_odds_ratio) %>%
+  filter(#log_odds_ratio >= 0.50,
+    p_before >= 0.9 | p_during >= 0.9)
+```
+
+```{r, echo=FALSE, warning=FALSE, fig.width=16, fig.height=9}
+ggplot(data = hashtags_comparison_plot_us, 
+       mapping = aes(x = p_before, y = p_during)) +
+  geom_point(alpha = 0.6, 
+             size = 15,
+             show.legend = TRUE,
+             aes(color = log_odds_ratio)) +
+  scale_color_viridis(rescaler = function(x, to = c(0, 1), from = NULL) {
+    ifelse(x < 2, 
+           scales::rescale(x,
+                           to = to,
+                           from = c(min(x, na.rm = TRUE), 2)),
+           1)
+  }
+  ) +
+  ggrepel::geom_label_repel(data = filter(hashtags_comparison_plot_us, 
+                                          p_during >= 0.9 | p_before >= 0.9),
+                            aes(label = hashtag),
+                            show.legend = FALSE,
+                            size = 6,
+                            family = 'serif',
+                            check_overlap = TRUE,
+                            nudge_x = 0.15,
+                            nudge_y = 0.15
+  ) +
+  #geom_text(aes(label = hashtag), check_overlap = TRUE, nudge_y = 0, nudge_x = 0.0075, size = 7, family = 'serif') +
+  geom_abline(color = "red") +
+  theme_bw() + 
+  xlab("Percentage of tweets containing hashtag before COVID-19") +
+  ylab("Percentage of tweets containing hashtag during COVID-19") +
+  xlim(0, 5) +
+  ylim(0, 8) +
+  geom_hline(yintercept = 0, color = "black") + 
+  geom_vline(xintercept = 0, color = "black") +
+  theme(panel.border = element_rect(color = "gray80"),
+        panel.grid.major = element_line(color = "gray30"),
+        panel.grid.minor = element_line(color = "gray80"),
+        axis.title=element_text(size=24, family='serif'),
+        axis.text=element_text(size=18, family='serif')
+  ) +
+  labs(color = 'log odds ratio')
+```
+
+```{r, include=FALSE, eval=FALSE}
+ggsave("output/hashtag-comparison-scatter-us.png", width = 16, height = 9)
+```
+
+## Find Tweeter Locations
+
+```{r}
+`%notin%` <- Negate(`%in%`)
+
+uk_locations_before <-
+  uk_orig %>%
+  filter(covid_period == 'before') %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  count(location, sort = TRUE) %>%
+  filter(location %notin% c(NA, "", " ", "  ", "   ", "    ")) %>%
+  mutate(hashtag = 'UKEdchat', covid_period = 'before')
+uk_locations_during <-
+  uk_orig %>%
+  filter(covid_period == 'during') %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  count(location, sort = TRUE) %>%
+  filter(location %notin% c(NA, "", " ", "  ", "   ", "    ")) %>%
+  mutate(hashtag = 'UKEdchat', covid_period = 'during')
+us_locations_before <-
+  us_orig %>%
+  filter(covid_period == 'before') %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  count(location, sort = TRUE) %>%
+  filter(location %notin% c(NA, "", " ", "  ", "   ", "    ")) %>%
+  mutate(hashtag = 'Edchat', covid_period = 'before')
+us_locations_during <-
+  us_orig %>%
+  filter(covid_period == 'during') %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  count(location, sort = TRUE) %>%
+  filter(location %notin% c(NA, "", " ", "  ", "   ", "    ")) %>%
+  mutate(hashtag = 'Edchat', covid_period = 'during')
+
+all_locations <- 
+  uk_locations_before %>%
+  bind_rows(uk_locations_during) %>%
+  bind_rows(us_locations_before) %>%
+  bind_rows(us_locations_during)
+```
+
+```{r}
+#write_csv(all_locations, "data/all-locations.csv")
+all_locations <- read_csv("data/all-locations.csv")
+```
+
+```{r, eval=FALSE}
+ggmap::register_google(key = Sys.getenv("GOOGLE_API_KEY"))
+ggmap::has_google_key()
+
+coords <- 
+  all_locations %>% 
+  distinct(location, .keep_all = TRUE) %>%
+  ggmap::mutate_geocode(location)
+```
+
+```{r}
+#write_csv(coords, "data/all-map-coords.csv")
+coords_only <- 
+  read_csv("data/all-map-coords.csv") %>%
+  select(location, lon, lat)
+
+all_map_coords <- 
+  all_locations %>%
+  left_join(coords_only, 
+            by = c('location')) %>%
+  mutate(radius = log(n+1))
+```
+
+```{r}
+world_map <- 
+  ggplot() + 
+  ggplot2::borders("world", colour="gray90", fill="gray80") +
+  ggplot2::coord_map()
+
+
+world_map0 <- map_data("world")
+world_sf <- 
+  sf::st_as_sf(world_map0, coords = c("long", "lat"), crs = 4326) %>% 
+  group_by(group) %>% 
+  summarize(do_union = FALSE) %>%
+  st_cast("POLYGON") %>% 
+  ungroup()
+
+world_map <- 
+  ggplot() +
+  geom_sf(data = world_sf, colour = "gray90", fill = "gray80") + 
+  coord_sf(ylim = c(-50, 90), datum = NA) +
+  theme(panel.background = element_rect(fill = 'white'))
+```
+
+```{r}
+`%notin%` <- Negate(`%in%`)
+
+uk_locations_before <-
+  all_map_coords %>%
+  filter(hashtag == 'UKEdchat',
+         covid_period == 'before') %>%
+  pull(location)
+uk_locations_during <-
+  all_map_coords %>%
+  filter(hashtag == 'UKEdchat',
+         covid_period == 'during') %>%
+  pull(location)
+uk_locations_both <-
+  all_map_coords %>%
+  filter(hashtag == 'UKEdchat',
+         (location %in% uk_locations_before) & 
+           (location %in% uk_locations_during)
+  ) %>%
+  pull(location)
+uk_locations_before_only <-
+  all_map_coords %>%
+  filter(hashtag == 'UKEdchat',
+         (location %in% uk_locations_before) & 
+           (location %notin% uk_locations_during)
+  ) %>%
+  pull(location)
+uk_locations_during_only <-
+  all_map_coords %>%
+  filter(hashtag == 'UKEdchat',
+         (location %notin% uk_locations_before) & 
+           (location %in% uk_locations_during)
+  ) %>%
+  pull(location)
+
+uk_coords <-
+  all_map_coords %>%
+  filter(hashtag == 'UKEdchat') %>%
+  mutate(shading = 
+           ifelse(location %in% uk_locations_both,
+                  "Before and During COVID-19",
+                  ifelse(
+                    location %in% us_locations_before_only,
+                    "Only Before", 
+                    "Only During"
+                  )
+           )
+  )
+```
+
+```{r}
+`%notin%` <- Negate(`%in%`)
+
+us_locations_before <-
+  all_map_coords %>%
+  filter(hashtag == 'Edchat',
+         covid_period == 'before') %>%
+  pull(location)
+us_locations_during <-
+  all_map_coords %>%
+  filter(hashtag == 'Edchat',
+         covid_period == 'during') %>%
+  pull(location)
+us_locations_both <-
+  all_map_coords %>%
+  filter(hashtag == 'Edchat',
+         (location %in% us_locations_before) & 
+           (location %in% us_locations_during)
+  ) %>%
+  pull(location)
+us_locations_before_only <-
+  all_map_coords %>%
+  filter(hashtag == 'Edchat',
+         (location %in% us_locations_before) & 
+           (location %notin% us_locations_during)
+  ) %>%
+  pull(location)
+us_locations_during_only <-
+  all_map_coords %>%
+  filter(hashtag == 'Edchat',
+         (location %notin% us_locations_before) & 
+           (location %in% us_locations_during)
+  ) %>%
+  pull(location)
+
+us_coords <-
+  all_map_coords %>%
+  filter(hashtag == 'Edchat') %>%
+  mutate(shading = 
+           ifelse(location %in% us_locations_both,
+                  "Before and During COVID-19",
+                  ifelse(
+                    location %in% us_locations_before_only,
+                    "Only Before", 
+                    "Only During"
+                  )
+           )
+  )
+```
+
+```{r}
+world_map +
+  geom_point(aes(x = uk_coords$lon, 
+                 y = uk_coords$lat,
+                 color = uk_coords$shading),
+             size = uk_coords$radius,
+             alpha = 0.3) +
+  scale_color_manual(values = c("#F0E442", "#56B4E9", "#D55E00")) +
+  #scale_size(range = c(1, 10)) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.title  =element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        strip.text.x = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position = 'bottom',
+        legend.box = 'vertical',
+        legend.box.background = element_rect(size = 0.25),
+        legend.title=element_text(size = 14, family = 'serif'), 
+        legend.text=element_text(size = 12, family = 'serif')
+  ) +
+  labs(color = 'Time Period:')
+```
+
+```{r, include=FALSE}
+ggsave(file="output/map-uk.png", width=8, height=4.5)
+```
+
+```{r}
+world_map +
+  geom_point(aes(x = us_coords$lon, 
+                 y = us_coords$lat,
+                 color = us_coords$shading),
+             size = us_coords$radius,
+             alpha = 0.3) +
+  scale_color_manual(values = c("#F0E442", "#56B4E9", "#D55E00")) +
+  #scale_size(range = c(1, 10)) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        axis.title  =element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        strip.text.x = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position = 'bottom',
+        legend.box = 'vertical',
+        legend.box.background = element_rect(size = 0.25),
+        legend.title=element_text(size = 14, family = 'serif'), 
+        legend.text=element_text(size = 12, family = 'serif')
+  ) +
+  labs(color = 'Time Period:')
+```
+
+```{r, include=FALSE}
+ggsave(file="output/map-us.png", width=8, height=4.5)
+```
+
+## Identify Frequent Question Askers
+
+```{r}
+uk_questioners_before_table <-
+  tweets_uk %>% 
+  filter(!is_retweet & has_question & covid_period == "before") %>%
+  count(screen_name) %>%
+  filter(n >= 10) %>%
+  arrange(desc(n))
+uk_questioners_before_table
+```
+
+```{r}
+uk_questioners_during_table <-
+  tweets_uk %>% 
+  filter(!is_retweet & has_question & covid_period == "during") %>%
+  count(screen_name) %>%
+  filter(n >= 10) %>%
+  arrange(desc(n))
+uk_questioners_during_table
+```
+
+```{r}
+us_questioners_before_table <-
+  tweets_us %>% 
+  filter(!is_retweet & has_question & covid_period == "before") %>%
+  count(screen_name) %>%
+  filter(n >= 10) %>%
+  arrange(desc(n))
+us_questioners_before_table
+```
+
+```{r}
+us_questioners_during_table <- 
+  tweets_us %>% 
+  filter(!is_retweet & has_question & covid_period == "during") %>%
+  count(screen_name) %>%
+  filter(n >= 10) %>%
+  arrange(desc(n))
+us_questioners_during_table
+```
+
+```{r, include=TRUE, echo=FALSE}
+get_profile <- function(x) {
+  rtweet::lookup_users(x) %>% pull(description)
+}
+
+uk_questioners_before <-
+  uk_questioners_before_table %>%
+  left_join(tweets_us, by = 'screen_name') %>%
+  select(screen_name, n, user_id, location, description, url, protected, 
+         followers_count, friends_count, statuses_count, favourites_count, 
+         account_created_at, verified, profile_url, profile_expanded_url,
+         covid_period, chat) %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  rename(n_questions = n) %>%
+  mutate(description = ifelse(is.na(description),
+                              get_profile(screen_name),
+                              description),
+         is_teacher = ifelse(grepl("[Tt]each", description), TRUE, FALSE)
+  )
+
+uk_questioners_during <-
+  uk_questioners_during_table %>%
+  left_join(tweets_us, by = 'screen_name') %>%
+  select(screen_name, n, user_id, location, description, url, protected, 
+         followers_count, friends_count, statuses_count, favourites_count, 
+         account_created_at, verified, profile_url, profile_expanded_url,
+         covid_period, chat) %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  rename(n_questions = n) %>%
+  mutate(description = ifelse(is.na(description),
+                              get_profile(screen_name),
+                              description),
+         is_teacher = ifelse(grepl("[Tt]each", description), TRUE, FALSE)
+  )
+
+us_questioners_before <-
+  us_questioners_before_table %>%
+  left_join(tweets_us, by = 'screen_name') %>%
+  select(screen_name, n, user_id, location, description, url, protected, 
+         followers_count, friends_count, statuses_count, favourites_count, 
+         account_created_at, verified, profile_url, profile_expanded_url,
+         covid_period, chat) %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  rename(n_questions = n) %>%
+  mutate(description = ifelse(is.na(description),
+                              get_profile(screen_name),
+                              description),
+         is_teacher = ifelse(grepl("[Tt]each", description), TRUE, FALSE)
+  )
+
+us_questioners_during <-
+  us_questioners_during_table %>%
+  left_join(tweets_us, by = 'screen_name') %>%
+  select(screen_name, n, user_id, location, description, url, protected, 
+         followers_count, friends_count, statuses_count, favourites_count, 
+         account_created_at, verified, profile_url, profile_expanded_url,
+         covid_period, chat) %>%
+  distinct(screen_name, .keep_all = TRUE) %>%
+  rename(n_questions = n) %>%
+  mutate(description = ifelse(is.na(description),
+                              get_profile(screen_name),
+                              description),
+         is_teacher = ifelse(grepl("[Tt]each", description), TRUE, FALSE)
+  )
+```
+
+```{r, eval=FALSE}
+uk_questioners_before %>% filter(is_teacher) %>% nrow()
+uk_questioners_during %>% filter(is_teacher) %>% nrow()
+us_questioners_before %>% filter(is_teacher) %>% nrow()
+us_questioners_during %>% filter(is_teacher) %>% nrow()
+```
+
+```{r, include=FALSE, eval=FALSE}
+write.csv(uk_questioners_before, "data/ukedchat-questioners-before.csv", row.names = FALSE)
+write.csv(uk_questioners_during, "data/ukedchat-questioners-during.csv", row.names = FALSE)
+write.csv(us_questioners_before, "data/edchat-questioners-before.csv", row.names = FALSE)
+write.csv(us_questioners_during, "data/edchat-questioners-during.csv", row.names = FALSE)
+```
+
+```{r, include=FALSE, message=FALSE}
+questioner_url <- ""  # need to add the URL from the working Google Sheet
+
+googlesheets4::gs4_deauth()
+
+questioners <- googlesheets4::read_sheet(questioner_url) %>%
+  mutate(grade_level = as.character(grade_level),
+         grade_level = ifelse(grade_level ==  "NULL", NA, grade_level)
+  )
+
+teacher_questioners <- 
+  questioners %>%
+  filter(teacher_screen == 1)
+
+#interview_candidates <-
+#  questioners %>%
+#  filter(interview == 1)
+```
+
+```{r, include=TRUE, echo=FALSE}
+ggplot(data = teacher_questioners,
+       aes(x = n_questions)) +
+  geom_boxplot(outlier.colour = 'black', 
+               outlier.shape = 19,
+               outlier.size = 2) +
+  stat_boxplot(geom ='errorbar',
+               coef = 1.50,
+               width = 0.1) +
+  theme_bw()
+```
+
+We looked at these `r nrow(questioners)` tweeters’ profiles and recent tweets to identify `r nrow(teacher_questioners)` teachers. 
+
+```{r, include=FALSE}
+teacher_question_tweets <-
+  question_tweets_2020 %>%
+  filter(screen_name %in% teacher_questioners$screen_name)
+```
+
+```{r, include=FALSE, eval=FALSE}
+write.csv(teacher_question_tweets, 
+          "teacher_question_tweets.csv", row.names = FALSE)
+```
+
+```{r session, include=TRUE}
+devtools::session_info()
+```
